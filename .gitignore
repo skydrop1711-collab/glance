@@ -1,0 +1,21 @@
+# Dependencies & build output
+node_modules/
+dist/
+*.ehpk
+
+# Environment & secrets — NEVER commit these
+.env
+.env.*
+*.key
+*.pem
+credentials/
+config/secrets.*
+
+# Logs & OS
+*.log
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
