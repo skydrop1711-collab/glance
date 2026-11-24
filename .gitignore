@@ -16,6 +16,9 @@ config/secrets.*
 .DS_Store
 Thumbs.db
 
+# Backend runtime data (live channel content, local only)
+backend/data/
+
 # Editor
 .vscode/
 .idea/

@@ -1,0 +1,1 @@
+{"description":"Glance backend: Telegram polling, digest + AI drafts, reply relay (Even Realities, Track 01)","devDependencies":{"@types/node":"^26.6.6","typescript":"^5.9.3"},"name":"glance-backend","private":true,"scripts":{"build":"tsc -p tsconfig.json","start":"node dist/server.js"},"type":"module","version":"0.1.0"}

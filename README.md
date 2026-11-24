@@ -14,6 +14,30 @@ with the SDK upgraded (see below), plus this README and the design document
 (`PLAN.md`). The full app (digest screens, backend, AI drafts, STT) is built
 23–29 Nov 2026 per the plan.
 
+## Status — day 2 (24 Nov 2026): backend live
+
+`backend/` (Node + TypeScript, no runtime dependencies) is running and
+verified end-to-end against the live test channel:
+
+- Polls Telegram `getUpdates` every 15 s; digest store in
+  `backend/data/state.json` (gitignored).
+- `GET /digest` → digest items; `GET /digest/:id` → detail + AI draft;
+  `POST /reply` → `sendMessage` via the bot; `POST /stt` → 501 (day 3).
+- Summaries + drafts by local Ollama (`qwen2.5:3b`, no paid API); extractive
+  fallback when Ollama is unavailable. Example, live: summary
+  *"Glance mengumumkan demo baru untuk jam 9 pagi besok, dengan materi yang
+  sudah siap."*, draft *"Saya akan hadir pada jam 9 pagi besok."*
+- Test 24 Nov: 2 test messages → digest → `POST /reply` delivered
+  (Telegram message 15 in the channel). Evidence in `../evidence/`
+  (`backend-day2.log`, `day2-e2e.txt`, `day2-reply.json`).
+
+Notes: the bot token is never in this repo — Bot API calls go through the
+registered connector helper (see `backend/README.md`). The bot's own messages
+never arrive via `getUpdates` (Telegram behavior), so the live poller-ingest
+step still needs one human-posted message in the test channel to be fully
+proven. The VM was replaced mid-day (24 Nov ~00:35 UTC): global `evenhub`
+0.2.0 was reinstalled, Ollama + backend restarted, state survived.
+
 ## What existed before 23 Nov 2026 (build-during-hackathon rule)
 
 Per the hackathon's build-during-hackathon rule, no final app code was
