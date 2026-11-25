@@ -38,6 +38,42 @@ step still needs one human-posted message in the test channel to be fully
 proven. The VM was replaced mid-day (24 Nov ~00:35 UTC): global `evenhub`
 0.2.0 was reinstalled, Ollama + backend restarted, state survived.
 
+## Status — day 3 (25 Nov 2026): app screens live in the simulator
+
+`src/main.ts` (rewritten from the template) renders the digest on the
+glasses, fed live by the backend:
+
+- **List screen:** `Glance · Telegram Digest` — one line per channel
+  (title + unread count, one-line summary, ✎ when an AI draft is ready),
+  up to 3 items; footer hints (`Tap open · ↑↓ move · 2× exit`).
+- **Detail screen:** channel title, full summary (wrapped, ≤4 lines),
+  AI draft (`Draft: …`, ≤2 lines), footer hints (`Tap back · 2× exit`).
+  Tap on detail goes back to the list; swipe down opens the next item's
+  detail (when there is one). Double-tap exits (mode 1, system dialog).
+- **Navigation:** tap = open/back, swipe up/down = move selection
+  (`SCROLL_TOP`/`SCROLL_BOTTOM` via `textEvent`), double-tap = exit.
+  One `TextContainerProperty` 576×288 per screen, re-rendered with
+  `textContainerUpgrade`; the phone-side WebView mirrors the same text.
+- **Data:** `GET /digest` on load + 60 s refresh on the list screen;
+  `GET /digest/:id` when opening a detail; loading + error (tap to retry)
+  states. Backend base URL is a constant in `main.ts`
+  (`http://127.0.0.1:3000`, whitelisted in `app.json` `network` permission).
+- **Rename:** the app is now **Glance** (`com.skydrop.glance`; was
+  "Even Hub Minimal" / `com.example.evenhubminimal`).
+
+Verified end-to-end in the simulator (25 Nov, automation API): list
+renders from live backend data (2,191 opaque pixels), tap opens the detail
+(4,086 px, summary + draft visible), tap returns to the list (byte-identical
+screenshot), swipe down/up arrive as `SCROLL_BOTTOM`/`SCROLL_TOP` events,
+double-tap exits (framebuffer cleared, 0 opaque pixels), console clean of
+errors. Evidence in `../evidence/` (`day3-sim.log`, `day3-list.png`,
+`day3-detail.png`, `day3-*-alpha.png`, `glance-day3.ehpk` 37,640 bytes).
+Infra note: the VM was replaced again before day 3 — backend, Ollama, and
+the global `evenhub` install were all down and had to be restarted
+(WebKitGTK reinstalled from the 50 `.deb` files in `../sysdeps/debs/`);
+all state survived. Write path (approve draft by tap → `sendMessage`) and
+STT are day 4 (26 Nov).
+
 ## What existed before 23 Nov 2026 (build-during-hackathon rule)
 
 Per the hackathon's build-during-hackathon rule, no final app code was
