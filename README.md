@@ -134,6 +134,44 @@ endpoint and the VM has no mic — only the backend `/stt` (real JFK speech,
 perfect transcript) and the tap-send flow were tested E2E. Evidence in
 `../evidence/` (`day4-sim.log`, `day4-*.png`, `glance-day4.ehpk` 38,566 bytes).
 
+## Status — day 5 (28 Nov 2026): demo video + final
+
+- **Demo video:** [`video/glance-demo.mp4`](video/glance-demo.mp4) —
+  1 min 29 s, 1280×720, English narration, 8 segments: problem → digest
+  list → detail + AI draft → tap send → `Terkirim!` → live STT test →
+  architecture → links. Every glasses screenshot is a real simulator
+  framebuffer capture from the 28 Nov end-to-end run below (not a mockup).
+  Recorded from the simulator — allowed by the rules; no G2 hardware on hand.
+- **Fresh end-to-end run (28 Nov, `verify-sim-day5.sh`):** after a forced
+  Ollama re-summarize of the live channel, list (fresh summary *"Bergulat
+  dengan demo Glance besok jam 9 pagi, ada yang bisa hadir?"*, draft
+  marker `*`) → detail (draft *"Saya bisa hadir pada jam 9 pagi
+  besok."*) → tap → `Terkirim!` → backend `reply sent … message 24`,
+  `messageCount` 11 → 12, last message is the draft text,
+  `outgoing=true` → auto-return to the list → double-click exits
+  (0 opaque pixels), console clean. Evidence in `../evidence/`
+  (`day5-sim.log`, `day5-*.png`, `glance-day5.ehpk` 38,566 bytes — same
+  bytes as day 4, app code unchanged since then).
+- **STT live test (28 Nov):** spoken *"Yes, I can come tomorrow at 9 in
+  the morning."* → `POST /stt` → exact transcript (model `tiny`, 2.59 s
+  audio). An earlier test the same day (*"Hello Glance, …"*) came back as
+  *"Hello, Glant. …"* — one proper-noun slip on the tiny model; reported
+  honestly here.
+- **Pack:** `evenhub pack` clean, `out.ehpk` 38,566 bytes,
+  `min_app_version 2.2.10` (SDK 0.0.16).
+- **Honest limitations:** (1) the voice long-press → `audioEvent` flow is
+  implemented but cannot be tested E2E in the simulator (no long-press or
+  audio-injection endpoint, VM has no mic) — only the backend `/stt` with
+  real speech and the tap-send flow were tested E2E; real-G2 testing is
+  still needed. (2) The demo channel ("Glance test") is a test channel;
+  its messages include test posts from development (the bot's own test
+  questions and the user's two live posts from 24–25 Nov). The digest,
+  draft, and send in the video are live end-to-end against that channel.
+  (3) The backend runs at `127.0.0.1:3000` for the simulator; a real G2
+  needs a public backend URL + whitelist update. (4) STT slows under
+  Ollama load (CPU contention on this VM), and the bot's own sent replies
+  are stored as outgoing messages and appear in the digest history.
+
 ## What existed before 23 Nov 2026 (build-during-hackathon rule)
 
 Per the hackathon's build-during-hackathon rule, no final app code was
