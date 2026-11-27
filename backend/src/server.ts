@@ -10,7 +10,7 @@
  *   GET  /digest          list of digest items (one per chat)
  *   GET  /digest/:id      detail: messages + summary + AI draft
  *   POST /reply           {itemId, text} -> sendMessage via bot
- *   POST /stt             not implemented yet (day 3) -> 501
+ *   POST /stt             raw 16kHz PCM -> text (local faster-whisper)
  *
  * Env: PORT (default 3000), POLL_MS (default 15000),
  *      OLLAMA_HOST, OLLAMA_MODEL, DATA_DIR.
@@ -21,6 +21,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { Store, dataDir, type StoredMessage } from './store.js';
 import { tgGetUpdates, tgSendMessage, type TgUpdate } from './telegram.js';
 import { summarize, ollamaAvailable } from './summarize.js';
+import { transcribePcm, sttReady, STT_MODEL } from './stt.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const POLL_MS = Number(process.env.POLL_MS ?? 15_000);
@@ -55,6 +56,17 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   }
   const text = Buffer.concat(chunks).toString('utf8');
   return text ? JSON.parse(text) : {};
+}
+
+async function readRawBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req) {
+    chunks.push(chunk as Buffer);
+    total += (chunk as Buffer).length;
+    if (total > maxBytes) throw new Error('body too large');
+  }
+  return Buffer.concat(chunks);
 }
 
 interface DigestItem {
@@ -198,6 +210,7 @@ const server = createServer(async (req, res) => {
         lastPollOk,
         lastPollError,
         ollama: await ollamaAvailable(),
+        stt: { model: STT_MODEL, ready: sttReady() },
         channels: Object.keys(store.state.channels).length,
         messages: store.state.messages.length,
         lastUpdateId: store.state.lastUpdateId,
@@ -259,7 +272,34 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/stt') {
-      sendJson(res, 501, { error: 'STT not implemented yet (day 3)' });
+      // Body: raw 16 kHz / 16-bit / mono PCM (application/octet-stream),
+      // or JSON {"audio": "<base64 PCM>"}. Empty transcription means
+      // "no speech detected" — still a 200, not an error.
+      try {
+        const contentType = req.headers['content-type'] ?? '';
+        let pcm: Buffer;
+        if (contentType.includes('application/json')) {
+          const body = (await readBody(req)) as { audio?: unknown };
+          if (typeof body.audio !== 'string' || !body.audio) {
+            sendJson(res, 400, { error: 'JSON body needs an "audio" base64 PCM field' });
+            return;
+          }
+          pcm = Buffer.from(body.audio, 'base64');
+        } else {
+          pcm = await readRawBody(req, 1024 * 1024);
+        }
+        if (pcm.length === 0) {
+          sendJson(res, 400, { error: 'empty audio body' });
+          return;
+        }
+        const result = await transcribePcm(pcm);
+        log(`stt: ${result.duration_s}s -> ${JSON.stringify(result.text.slice(0, 80))}`);
+        sendJson(res, 200, { ok: true, model: STT_MODEL, ...result });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`stt FAILED: ${msg}`);
+        sendJson(res, 503, { error: 'stt unavailable', detail: msg.slice(0, 200) });
+      }
       return;
     }
     sendJson(res, 404, { error: 'not found' });

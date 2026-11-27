@@ -1,12 +1,12 @@
 /**
  * Glance — Telegram Digest & Drafts on G2 (Even Realities, Track 01).
  *
- * Day 3 (25 Nov 2026): digest LIST + DETAIL screens, tap/swipe navigation,
- * data from the Glance backend (GET /digest, GET /digest/:id).
- * One TextContainerProperty 576x288 per screen, re-rendered with
- * textContainerUpgrade on every state change (the pattern proven by the
- * minimal template). Write path (approve draft by tap) is day 4 — here a
- * tap on the detail screen goes back to the list.
+ * Day 4 (27 Nov 2026): write path + voice reply.
+ *  - Detail screen, tap = approve AI draft -> POST /reply -> sendMessage.
+ *  - Long-press in detail = voice reply: glasses mic (audioControl) ->
+ *    audioEvent PCM frames -> POST /stt -> confirm screen -> tap sends.
+ *  - One TextContainerProperty 576x288 per screen, re-rendered with
+ *    textContainerUpgrade on every state change.
  *
  * Backend base URL is the local backend (127.0.0.1:3000), whitelisted in
  * app.json `network` permission. No secrets in this bundle.
@@ -17,6 +17,7 @@ import {
   CreateStartUpPageContainer,
   TextContainerUpgrade,
   OsEventTypeList,
+  AudioInputSource,
 } from '@evenrealities/even_hub_sdk'
 
 const BACKEND_URL = 'http://127.0.0.1:3000'
@@ -51,7 +52,10 @@ interface DigestDetail extends DigestItem {
   messages: DigestMessage[]
 }
 
-type Screen = 'loading' | 'list' | 'detail' | 'error'
+type Screen = 'loading' | 'list' | 'detail' | 'error' | 'sent' | 'listening' | 'confirm'
+
+const VOICE_MAX_MS = 10_000 // max 10 s of mic audio (~320 KB PCM)
+const SENT_MS = 2_500 // "Terkirim" confirmation stays this long
 
 const bridge = await waitForEvenAppBridge()
 
@@ -94,6 +98,14 @@ let selected = 0
 let detail: DigestDetail | null = null
 let lastError = ''
 let lastFetchAt = 0
+// Write path + voice reply state.
+let sendError = ''
+let sentText = ''
+let transcribedText = ''
+let voiceChunks: Uint8Array[] = []
+let voiceStartedAt = 0
+let voiceTimer: ReturnType<typeof setTimeout> | null = null
+let sentTimer: ReturnType<typeof setTimeout> | null = null
 
 // --- rendering --------------------------------------------------------------
 
@@ -106,7 +118,8 @@ function renderList(): string {
       const marker = i === selected ? '▶' : ' '
       const unread = it.unread > 0 ? ` · ${it.unread} new` : ''
       lines.push(`${marker} ${truncate(it.title, LINE_WIDTH - 4)}${unread}`)
-      const draftMark = it.draft ? ' ✎' : ''
+      // '✎' (U+270E) has no glyph in the simulator font — '*' marks "has draft".
+      const draftMark = it.draft ? ' *' : ''
       lines.push(`  ${truncate(it.summary, LINE_WIDTH - 3)}${draftMark}`)
     }
     if (items.length > MAX_LIST_ITEMS) lines.push(`  +${items.length - MAX_LIST_ITEMS} more`)
@@ -125,8 +138,26 @@ function renderDetail(): string {
     const last = detail.messages[detail.messages.length - 1]
     if (last) lines.push(...wrap(`Last: ${last.from}: ${last.text}`, LINE_WIDTH, 2))
   }
-  lines.push('Tap back · 2× exit')
+  if (sendError) lines.push(truncate(`! ${sendError}`, LINE_WIDTH))
+  // Tap approves the AI draft (day 4); swipe up goes back.
+  lines.push(detail.draft ? 'Tap kirim draf · ↑ back' : 'Tap back · 2× exit')
+  if (detail.draft) lines.push('Long-press: balas suara')
   return lines.join('\n')
+}
+
+function renderSent(): string {
+  // Note: '✓' (U+2713) has no glyph in the simulator font (lvgl warning
+  // "glyph dsc. not found for U+2713") — plain ASCII so it renders anywhere.
+  return ['Terkirim!', ...wrap(sentText, LINE_WIDTH, 3), '', 'Kembali ke list…'].join('\n')
+}
+
+function renderListening(): string {
+  const secs = Math.max(0, Math.round((Date.now() - voiceStartedAt) / 1000))
+  return ['Mendengarkan…', `${secs}s / 10s`, '', 'Tap stop · ↑ batal'].join('\n')
+}
+
+function renderConfirm(): string {
+  return ['Kamu bilang:', ...wrap(transcribedText, LINE_WIDTH, 4), '', 'Tap kirim · ↑ batal'].join('\n')
 }
 
 function renderLoading(): string {
@@ -147,6 +178,12 @@ function renderContent(): string {
       return renderDetail()
     case 'error':
       return renderError()
+    case 'sent':
+      return renderSent()
+    case 'listening':
+      return renderListening()
+    case 'confirm':
+      return renderConfirm()
     default:
       return renderLoading()
   }
@@ -220,10 +257,151 @@ async function openDetail(id: string): Promise<void> {
 
 async function backToList(): Promise<void> {
   detail = null
+  sendError = ''
   screen = 'list'
   await update()
   // Refresh in the background so the list is never stale.
   void loadDigest()
+}
+
+// --- write path -------------------------------------------------------------
+
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS)
+  try {
+    const res = await fetch(`${BACKEND_URL}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return (await res.json()) as T
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function sendReply(text: string): Promise<void> {
+  if (!detail) return
+  const itemId = detail.id
+  try {
+    await postJson<{ ok: boolean; messageId: number }>('/reply', { itemId, text })
+    sentText = text
+    detail = null
+    screen = 'sent'
+    await update()
+    if (sentTimer) clearTimeout(sentTimer)
+    sentTimer = setTimeout(() => {
+      if (screen === 'sent') void backToList()
+    }, SENT_MS)
+  } catch (err) {
+    sendError = err instanceof Error ? `Gagal kirim (${err.message})` : 'Gagal kirim'
+    console.log(`[Glance] sendReply failed: ${sendError}`)
+    screen = 'detail'
+    await update()
+  }
+}
+
+// --- voice reply ------------------------------------------------------------
+
+function clearVoiceTimer(): void {
+  if (voiceTimer) {
+    clearTimeout(voiceTimer)
+    voiceTimer = null
+  }
+}
+
+async function startVoice(): Promise<void> {
+  if (!detail || screen !== 'detail') return
+  sendError = ''
+  let micOk = false
+  try {
+    micOk = await bridge.audioControl(true, AudioInputSource.Glasses)
+  } catch (err) {
+    console.log(`[Glance] audioControl failed: ${err}`)
+  }
+  if (!micOk) {
+    sendError = 'Mic tidak tersedia'
+    await update()
+    return
+  }
+  voiceChunks = []
+  voiceStartedAt = Date.now()
+  screen = 'listening'
+  await update()
+  clearVoiceTimer()
+  voiceTimer = setTimeout(() => {
+    if (screen === 'listening') void stopVoice(true)
+  }, VOICE_MAX_MS)
+}
+
+async function stopVoice(transcribe: boolean): Promise<void> {
+  clearVoiceTimer()
+  try {
+    await bridge.audioControl(false)
+  } catch (err) {
+    console.log(`[Glance] audioControl(false) failed: ${err}`)
+  }
+  if (!transcribe || voiceChunks.length === 0) {
+    screen = 'detail'
+    await update()
+    return
+  }
+  // Concatenate 100 ms PCM frames (16 kHz, 16-bit, mono) into one buffer.
+  const total = voiceChunks.reduce((n, c) => n + c.length, 0)
+  const pcm = new Uint8Array(total)
+  let off = 0
+  for (const c of voiceChunks) {
+    pcm.set(c, off)
+    off += c.length
+  }
+  voiceChunks = []
+  screen = 'loading'
+  await update()
+  try {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 130_000)
+    let result: { ok: boolean; text: string }
+    try {
+      const res = await fetch(`${BACKEND_URL}/stt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: pcm.buffer as ArrayBuffer,
+        signal: ctrl.signal,
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      result = (await res.json()) as { ok: boolean; text: string }
+    } finally {
+      clearTimeout(timer)
+    }
+    const text = (result.text ?? '').trim()
+    if (!text) {
+      sendError = 'Tidak terdengar, coba lagi'
+      screen = 'detail'
+    } else {
+      transcribedText = text
+      screen = 'confirm'
+    }
+  } catch (err) {
+    sendError = err instanceof Error ? `STT gagal (${err.message})` : 'STT gagal'
+    console.log(`[Glance] stt failed: ${sendError}`)
+    screen = 'detail'
+  }
+  await update()
+}
+
+async function cancelVoice(): Promise<void> {
+  clearVoiceTimer()
+  try {
+    await bridge.audioControl(false)
+  } catch {
+    // Mic may already be closed; ignore.
+  }
+  voiceChunks = []
+  screen = 'detail'
+  await update()
 }
 
 // --- startup ----------------------------------------------------------------
@@ -277,17 +455,32 @@ const unsubscribe = bridge.onEvenHubEvent((event) => {
   const type = sysType ?? textType
   if (type !== null) console.log(`[Glance] event sys=${sysType} text=${textType} screen=${screen}`)
 
+  if (event.audioEvent) {
+    // Mic PCM frame (100 ms, 16 kHz 16-bit mono) — only while recording.
+    if (screen === 'listening') {
+      voiceChunks.push(event.audioEvent.audioPcm)
+    }
+    return
+  }
+
   if (sysType === OsEventTypeList.DOUBLE_CLICK_EVENT || textType === OsEventTypeList.DOUBLE_CLICK_EVENT) {
     void bridge.shutDownPageContainer(1)
     return
   }
 
   if (sysType === OsEventTypeList.SCROLL_TOP_EVENT || textType === OsEventTypeList.SCROLL_TOP_EVENT) {
-    // Swipe up: previous item / back.
+    // Swipe up: previous item / back / cancel.
     if (screen === 'list') {
       selected = Math.max(0, selected - 1)
       void update()
     } else if (screen === 'detail') {
+      void backToList()
+    } else if (screen === 'listening') {
+      void cancelVoice()
+    } else if (screen === 'confirm') {
+      screen = 'detail'
+      void update()
+    } else if (screen === 'sent') {
       void backToList()
     }
     return
@@ -312,22 +505,31 @@ const unsubscribe = bridge.onEvenHubEvent((event) => {
     if (screen === 'list' && items.length > 0) {
       void openDetail(items[selected].id)
     } else if (screen === 'detail') {
-      void backToList()
+      // Tap approves the AI draft (day 4); without a draft it goes back.
+      if (detail?.draft) void sendReply(detail.draft)
+      else void backToList()
     } else if (screen === 'error') {
       screen = 'loading'
       void update()
       void loadDigest()
+    } else if (screen === 'sent') {
+      void backToList()
+    } else if (screen === 'listening') {
+      void stopVoice(true)
+    } else if (screen === 'confirm') {
+      void sendReply(transcribedText)
     }
     return
   }
 
   if (sysType === OsEventTypeList.LONG_PRESS_EVENT) {
-    // Long-press = voice reply (day 4, STT). Logged only for now.
-    console.log('[Glance] long-press (voice reply not yet implemented)')
+    // Long-press in detail = voice reply (day 4, STT).
+    if (screen === 'detail') void startVoice()
     return
   }
 
   if (sysType === OsEventTypeList.SYSTEM_EXIT_EVENT || sysType === OsEventTypeList.ABNORMAL_EXIT_EVENT) {
+    if (screen === 'listening') void bridge.audioControl(false).catch(() => undefined)
     unsubscribe()
   }
 })
@@ -337,3 +539,7 @@ void loadDigest()
 setInterval(() => {
   if (screen === 'list') void loadDigest()
 }, REFRESH_MS)
+// Refresh the recording timer while listening.
+setInterval(() => {
+  if (screen === 'listening') void update()
+}, 500)

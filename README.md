@@ -74,6 +74,66 @@ the global `evenhub` install were all down and had to be restarted
 all state survived. Write path (approve draft by tap → `sendMessage`) and
 STT are day 4 (26 Nov).
 
+## Status — day 4 (27 Nov 2026): write path + voice reply
+
+`src/main.ts` gains the write path and the voice-reply flow; the backend
+gains a real `POST /stt` (was 501):
+
+- **Write path:** on the detail screen, tap approves the AI draft →
+  `POST /reply` → `sendMessage` via the bot → `Terkirim!` screen with the
+  sent text, auto-return to the list after 2.5 s (tap returns immediately).
+  Without a draft, tap on detail just goes back (unchanged behaviour).
+  On send failure the detail screen shows the error (`Gagal kirim …`).
+- **Voice reply:** long-press on detail starts the glasses mic
+  (`audioControl(true, AudioInputSource.Glasses)`) → `Mendengarkan…`
+  screen with a seconds counter (auto-stop at 10 s) → tap stops →
+  collected `audioEvent` PCM frames (100 ms, 16 kHz 16-bit mono) are
+  `POST`ed to `/stt` → confirm screen (`Kamu bilang: …`) → tap sends it
+  via `POST /reply`; swipe up cancels (mic closed). Mic unavailable shows
+  `Mic tidak tersedia`; empty transcription shows `Tidak terdengar, coba lagi`.
+- **STT (backend):** local faster-whisper (`tiny`), persistent daemon
+  (`stt-daemon.py`, model loaded once) with one-shot fallback (`stt.py`).
+  Accepts raw PCM 16 kHz/16-bit/mono or JSON `{audio: base64}` (WAV/any
+  ffmpeg-decodable), 1 MB cap. Measured 27 Nov: daemon cold start ~19 s,
+  warm ~3.4 s for an 11 s speech sample; one-shot ~21–24 s; silence →
+  empty text. `av` pinned to `==15.1.0` (faster-whisper 1.2.1 breaks with
+  `av` 19). `/health` reports `stt: {model, ready}`.
+- **Glyph fixes:** `✓` (U+2713) and `✎` (U+270E) have no glyph in the
+  simulator font (lvgl `glyph dsc. not found` warnings) — the sent screen
+  now says `Terkirim!` and the list marks "has draft" with `*`.
+- **Summarize tuning (`backend/src/summarize.ts`):** generation timeout
+  120 s → 900 s, `num_predict` 300 → 180. A direct qwen2.5:3b generate
+  measured 27 Nov took **578.9 s for ~50 output tokens** on this shared
+  1.5-CPU VM under parallel load; the old 120 s timeout fired on every
+  summary, so the digest silently fell back to extractive (no draft) —
+  which disables the write path entirely. The JSON answer is ~50–90
+  tokens, so 180 is plenty.
+- **Infra notes:** the VM was replaced again before day 4 — Ollama,
+  backend, Vite, the global `evenhub` install, and WebKitGTK were all
+  down and had to be restarted/reinstalled (`../sysdeps/debs/`). Restart
+  rule learned the hard way: never put `pkill -f "node dist/server.js"`
+  and the literal `node dist/server.js` in one command — pkill kills its
+  own shell; use the `[n]ode` bracket pattern and separate calls.
+
+Verified end-to-end in the simulator (27 Nov, automation API): list renders
+from live backend data, tap opens the detail (draft `Saya akan hadir pada
+jam 9 pagi besok.` visible), tap sends it — console shows `screen=sent`
+with the sent text, backend logs `reply sent to -1003973222722:
+message 18`, `messageCount` 5 → 6, last message is the draft text with
+`outgoing=true`. A second manual run sent message 19 the same way (the
+sent screen then still read `Terkirim ✓`). A third run with no draft
+correctly fell back to tap = back to list. A final re-run against a fresh
+Ollama draft (trigger message 22 → draft `Saya akan hadir pada jam 9 pagi
+besok.`) re-verified the fixed build end to end: list (Ollama summary + `*`
+draft marker), detail, tap → `Terkirim!` screen (screenshot + console log),
+backend `reply sent … message 23`, `messageCount` 10 → 11, auto-return to
+the list after 2.5 s, zero lvgl glyph warnings. Voice-reply
+screens (`listening`/`confirm`) are implemented but **not** testable E2E in
+the simulator: the automation API has no long-press or audio-injection
+endpoint and the VM has no mic — only the backend `/stt` (real JFK speech,
+perfect transcript) and the tap-send flow were tested E2E. Evidence in
+`../evidence/` (`day4-sim.log`, `day4-*.png`, `glance-day4.ehpk` 38,566 bytes).
+
 ## What existed before 23 Nov 2026 (build-during-hackathon rule)
 
 Per the hackathon's build-during-hackathon rule, no final app code was

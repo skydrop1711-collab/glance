@@ -46,7 +46,8 @@ export async function summarize(
   const lines = recent
     .map((m) => `- ${m.from}: ${m.text}`)
     .join('\n');
-  const prompt = `You summarize a busy Telegram channel for smart glasses. The user glances at it for 30 seconds.\n\nChannel: ${channelTitle}\nRecent messages:\n${lines}\n\nReply with JSON only, no other text:\n{"summary": "one or two short sentences", "draft": "a short reply draft of 1-2 sentences, or empty string if no reply is needed", "needsReply": true or false}\n\nRules:\n- Write summary AND draft in the SAME language as the messages (Indonesian if the messages are Indonesian, English if they are English).\n- A reply is needed if a message asks a question, requests confirmation, or clearly expects the user to respond.\n- If needsReply is true, draft MUST be a non-empty 1-2 sentence reply in that language. If needsReply is false, draft must be empty.\n- The draft is written AS the user replying in the channel — a direct answer, confirmation, or question back to the group. NEVER write a meta-question about the message itself (forbidden: "Is this relevant to your project?", "Do you want me to summarize this?").\n- Example (Indonesian messages: "Besok demo jam 10 pagi, siapa bisa hadir?") → good draft: "Saya bisa hadir besok jam 10 pagi."`;
+  const prompt = `You summarize a busy Telegram channel for smart glasses. The user glances at it for 30 seconds.\n\nChannel: ${channelTitle}\nRecent messages:\n${lines}\n\nReply with JSON only, no other text:\n{"summary": "one or two short sentences", "draft": "a short reply draft of 1-2 sentences, or empty string if no reply is needed", "needsReply": true or false}\n\nRules:\n- Write summary AND draft in Indonesian (the user's language), regardless
+  of the messages' language — the glasses UI is Indonesian.\n- A reply is needed if a message asks a question, requests confirmation, or clearly expects the user to respond.\n- If needsReply is true, draft MUST be a non-empty 1-2 sentence reply in that language. If needsReply is false, draft must be empty.\n- The draft is written AS the user replying in the channel — a direct answer, confirmation, or question back to the group. NEVER write a meta-question about the message itself (forbidden: "Is this relevant to your project?", "Do you want me to summarize this?").\n- Example (Indonesian messages: "Besok demo jam 10 pagi, siapa bisa hadir?") → good draft: "Saya bisa hadir besok jam 10 pagi."`;
   try {
     const res = await fetch(`${OLLAMA_HOST}/api/generate`, {
       method: 'POST',
@@ -56,9 +57,15 @@ export async function summarize(
         prompt,
         format: 'json',
         stream: false,
-        options: { temperature: 0.3, num_predict: 300 },
+        // Day 4 (2nd tuning): timeout 600s -> 900s. A direct generate
+        // measured 27 Nov 2026 took 578.9s for ~50 output tokens
+        // (~0.1-0.3 tok/s) on this shared 1.5-CPU VM under parallel load
+        // (two Ollama runners + STT daemon + sibling agents); 600s is
+        // inside the margin of error. The call is async (poll-triggered),
+        // so a longer timeout costs nothing when Ollama is fast.
+        options: { temperature: 0.3, num_predict: 180 },
       }),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(900_000),
     });
     if (!res.ok) return extractive(messages);
     const data = (await res.json()) as { response?: string };
